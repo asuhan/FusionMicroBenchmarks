@@ -6,7 +6,11 @@ import torch.nn.functional as F
 import torch.nn.init as init
 
 import math
+import lazy_tensor_core.core.lazy_model as ltm
+import lazy_tensor_core.debug.metrics as metrics
+import lazy_tensor_core
 
+lazy_tensor_core._LAZYC._ltc_init_ts_backend()
 torch._C._jit_set_nvfuser_enabled(True)
 torch._C._jit_set_texpr_fuser_enabled(False)
 torch._C._jit_set_profiling_executor(True)
@@ -563,23 +567,19 @@ class BertSelfOutput(nn.Module):
         return output4
 
 if __name__ == "__main__" :
-    inputs = torch.randint(0, 30522, (64, 128), device="cuda", dtype=torch.int64, requires_grad=False)
-    mask = torch.randint(0, 2, (64, 128), device="cuda", dtype=torch.int64, requires_grad=False)
-    seq = torch.randint(0, 2, (64, 128), device="cuda", dtype=torch.int64, requires_grad=False)
-    grads1 = torch.randn(64, 128, 30522, device="cuda", dtype=torch.float32, requires_grad=False)
-    grads2 = torch.randn(64, 2, device="cuda", dtype=torch.float32, requires_grad=False)
+    device = "xla"
+    inputs = torch.randint(0, 30522, (64, 128), device=device, dtype=torch.int64, requires_grad=False)
+    mask = torch.randint(0, 2, (64, 128), device=device, dtype=torch.int64, requires_grad=False)
+    seq = torch.randint(0, 2, (64, 128), device=device, dtype=torch.int64, requires_grad=False)
+    grads1 = torch.randn(64, 128, 30522, device=device, dtype=torch.float32, requires_grad=False)
+    grads2 = torch.randn(64, 2, device=device, dtype=torch.float32, requires_grad=False)
    
     model = BertForPreTraining(BertConfig())
-    model.train()
-    model.cuda()
+    model = model.to(device=device)
    
-    model = torch.jit.script(model)
-   
-    with torch.autograd.profiler.emit_nvtx(enabled=False): ### Profiling
-        for idx in range(5) :
-            if idx == 3 :
-                print(model.graph_for(inputs, seq, mask))
-                #for state in list(model.get_debug_state().execution_plans.values())[0].code.grad_executor_states() :
-                #    print(list(state.execution_plans.values())[0].graph)
-            out1,out2 = model(input_ids=inputs, token_type_ids=seq, attention_mask=mask)
-            torch.autograd.backward((out1, out2),(grads1, grads2))
+    for idx in range(5) :
+        out1,out2 = model(input_ids=inputs, token_type_ids=seq, attention_mask=mask)
+        torch.autograd.backward((out1, out2),(grads1, grads2))
+        ltm.mark_step()
+
+    print(metrics.metrics_report())

@@ -1,7 +1,11 @@
 import torch
 from torch.nn import Module
 import torch.nn.functional as F
+import lazy_tensor_core.core.lazy_model as ltm
+import lazy_tensor_core.debug.metrics as metrics
+import lazy_tensor_core
 
+lazy_tensor_core._LAZYC._ltc_init_ts_backend()
 torch._C._jit_set_nvfuser_enabled(True)
 torch._C._jit_set_texpr_fuser_enabled(False)
 torch._C._jit_set_profiling_executor(True)
@@ -19,9 +23,9 @@ class BertConfig :
         self.num_layers = 10
 
 class Fusion(Module):
-    def __init__(self, config):
+    def __init__(self, config, device):
         super(Fusion, self).__init__()
-        self.bias = torch.nn.Parameter(torch.zeros(config.hidden_size))
+        self.bias = torch.nn.Parameter(torch.zeros(config.hidden_size, device=device))
 
     def forward(self, inputs):
         out1 = inputs + self.bias
@@ -29,18 +33,17 @@ class Fusion(Module):
         return out2
 
 if __name__ == "__main__" :
-    inputs = torch.randn(8, 512, 4096, device="cuda", dtype=torch.float, requires_grad=True)
-    grads = torch.randn(8, 512, 4096, device="cuda", dtype=torch.float, requires_grad=False)
+    device = 'xla'
+    inputs = torch.randn(8, 512, 4096, device=device, dtype=torch.float, requires_grad=True)
+    grads = torch.randn(8, 512, 4096, device=device, dtype=torch.float, requires_grad=False)
 
-    model = Fusion(BertConfig())
-    model.cuda()
+    ltm.mark_step()
 
-    jit_model = torch.jit.script(model)
+    model = Fusion(BertConfig(), device=device)
 
-    for idx in range(5) :
-        if idx == 3 :
-            print(jit_model.graph_for(inputs))
-            for state in list(jit_model.get_debug_state().execution_plans.values())[0].code.grad_executor_states() :
-                print(list(state.execution_plans.values())[0].graph)
-        out = jit_model.forward(inputs)
+    for idx in range(1) :
+        out = model(inputs)
         out.backward(grads)
+        ltm.mark_step()
+
+    print(metrics.metrics_report())

@@ -6,7 +6,11 @@ import torch.nn.functional as F
 import torch.nn.init as init
 
 import math
+import lazy_tensor_core.core.lazy_model as ltm
+import lazy_tensor_core.debug.metrics as metrics
+import lazy_tensor_core
 
+lazy_tensor_core._LAZYC._ltc_init_ts_backend()
 torch._C._jit_set_nvfuser_enabled(True)
 torch._C._jit_set_texpr_fuser_enabled(False)
 torch._C._jit_set_profiling_executor(True)
@@ -129,20 +133,19 @@ class BertSelfOutput(nn.Module):
         return output4
 
 if __name__ == "__main__" :
-    inputs = torch.randn(8, 512, 1024, device="cuda", dtype=torch.float, requires_grad=True).transpose(0,1)
-    mask = torch.randn(8, 1, 1, 512, device="cuda", dtype=torch.float, requires_grad=False)
+    device = 'xla'
+    inputs = torch.randn(8, 512, 1024, device=device, dtype=torch.float, requires_grad=True).transpose(0,1)
+    mask = torch.randn(8, 1, 1, 512, device=device, dtype=torch.float, requires_grad=False)
     mask_bool = mask > 0.
-    grads = torch.randn(512, 8, 1024, device="cuda", dtype=torch.float, requires_grad=False)
-   
-    model = Fusion(BertConfig())
-    model.cuda()
-   
-    jit_model = torch.jit.script(model)
+    grads = torch.randn(512, 8, 1024, device=device, dtype=torch.float, requires_grad=False)
 
-    for idx in range(5) :
-        if idx == 3 :
-            print(jit_model.graph_for(inputs, mask_bool))
-            for state in list(jit_model.get_debug_state().execution_plans.values())[0].code.grad_executor_states() :
-                print(list(state.execution_plans.values())[0].graph)
-        out = jit_model.forward(inputs, mask_bool)
+    ltm.mark_step()
+    model = Fusion(BertConfig())
+    model = model.to(device='xla')
+
+    for idx in range(1) :
+        out = model(inputs, mask_bool)
         out.backward(grads)
+        ltm.mark_step()
+
+    print(metrics.metrics_report())

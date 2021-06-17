@@ -6,7 +6,11 @@ import torch.nn.functional as F
 import torch.nn.init as init
 
 import math
+import lazy_tensor_core.core.lazy_model as ltm
+import lazy_tensor_core.debug.metrics as metrics
+import lazy_tensor_core
 
+lazy_tensor_core._LAZYC._ltc_init_ts_backend()
 torch._C._jit_set_nvfuser_enabled(True)
 torch._C._jit_set_texpr_fuser_enabled(False)
 torch._C._jit_set_profiling_executor(True)
@@ -66,22 +70,20 @@ if __name__ == "__main__" :
     seq_length = 512
     head_dim = int(config.hidden_size / config.num_attention_heads)
 
-    queries = torch.randn(sequences*config.num_attention_heads, seq_length, head_dim, device="cuda", dtype=torch.float, requires_grad=True)
-    keys = torch.randn(sequences*config.num_attention_heads, seq_length, head_dim, device="cuda", dtype=torch.float, requires_grad=True)
-    values = torch.randn(sequences*config.num_attention_heads, seq_length, head_dim, device="cuda", dtype=torch.float, requires_grad=True)
-    mask = torch.randn(sequences, 1, 1, seq_length, device="cuda", dtype=torch.float, requires_grad=False)
+    device = 'xla'
+    queries = torch.randn(sequences*config.num_attention_heads, seq_length, head_dim, device=device, dtype=torch.float, requires_grad=True)
+    keys = torch.randn(sequences*config.num_attention_heads, seq_length, head_dim, device=device, dtype=torch.float, requires_grad=True)
+    values = torch.randn(sequences*config.num_attention_heads, seq_length, head_dim, device=device, dtype=torch.float, requires_grad=True)
+    mask = torch.randn(sequences, 1, 1, seq_length, device=device, dtype=torch.float, requires_grad=False)
     mask_bool = mask > 0.
-    grads = torch.randn(sequences*config.num_attention_heads, seq_length, head_dim, device="cuda", dtype=torch.float, requires_grad=False)
-   
-    model = Fusion(config)
-    model.cuda()
-   
-    jit_model = torch.jit.script(model)
+    grads = torch.randn(sequences*config.num_attention_heads, seq_length, head_dim, device=device, dtype=torch.float, requires_grad=False)
 
-    for idx in range(5) :
-        if idx == 3 :
-            print(jit_model.graph_for(queries, keys, values, mask_bool))
-            for state in list(jit_model.get_debug_state().execution_plans.values())[0].code.grad_executor_states() :
-                print(list(state.execution_plans.values())[0].graph)
-        out = jit_model.forward(queries, keys, values, mask_bool)
+    ltm.mark_step()
+    model = Fusion(config)
+
+    for idx in range(1) :
+        out = model(queries, keys, values, mask_bool)
         out.backward(grads)
+        ltm.mark_step()
+
+    print(metrics.metrics_report())

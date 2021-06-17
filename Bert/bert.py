@@ -6,7 +6,11 @@ import torch.nn.functional as F
 import torch.nn.init as init
 
 import math
+import lazy_tensor_core.core.lazy_model as ltm
+import lazy_tensor_core.debug.metrics as metrics
+import lazy_tensor_core
 
+lazy_tensor_core._LAZYC._ltc_init_ts_backend()
 torch._C._jit_set_nvfuser_enabled(True)
 torch._C._jit_set_texpr_fuser_enabled(False)
 torch._C._jit_set_profiling_executor(True)
@@ -39,17 +43,20 @@ class StridedBmm1Func(torch.autograd.Function) :
     @staticmethod
     def forward(ctx, input1, input2) :
         ctx.save_for_backward(input1, input2)
-        output = torch.empty((input1.size(0),input1.size(1),input2.size(2)), dtype=input1.dtype, device=torch.device('cuda'))
-        output = torch.bmm(input1, input2, out=output)
+        output = torch.empty((input1.size(0),input1.size(1),input2.size(2)), dtype=input1.dtype, device=torch.device('xla'))
+        # output = torch.bmm(input1, input2, out=output)
+        output = torch.bmm(input1, input2)
         return output.detach()
 
     @staticmethod
     def backward(ctx, grad_output) :
         input1,input2 = ctx.saved_tensors
-        grad_input1 = torch.empty((input1.size(1), input2.size(0), input1.size(2)), dtype=input1.dtype, device=torch.device('cuda')).transpose(1,0)
-        grad_input2 = torch.empty((input2.size(2), input2.size(0), input2.size(1)), dtype=input2.dtype, device=torch.device('cuda')).transpose(1,0)
-        grad_input1 = torch.bmm(grad_output, input2.transpose(1,2), out=grad_input1)
-        grad_input2 = torch.bmm(grad_output.transpose(1,2), input1, out=grad_input2).transpose(1,2)
+        grad_input1 = torch.empty((input1.size(1), input2.size(0), input1.size(2)), dtype=input1.dtype, device=torch.device('xla')).transpose(1,0)
+        grad_input2 = torch.empty((input2.size(2), input2.size(0), input2.size(1)), dtype=input2.dtype, device=torch.device('xla')).transpose(1,0)
+        # grad_input1 = torch.bmm(grad_output, input2.transpose(1,2), out=grad_input1)
+        grad_input1 = torch.bmm(grad_output, input2.transpose(1,2))
+        # grad_input2 = torch.bmm(grad_output.transpose(1,2), input1, out=grad_input2).transpose(1,2)
+        grad_input2 = torch.bmm(grad_output.transpose(1,2), input1).transpose(1,2)
         return grad_input1,grad_input2
 
 strided_bmm1 = StridedBmm1Func.apply
@@ -58,17 +65,19 @@ class StridedBmm2Func(torch.autograd.Function) :
      @staticmethod
      def forward(ctx, input1, input2) :
          ctx.save_for_backward(input1, input2)
-         output = torch.empty((input1.size(1), input1.size(0), input2.size(2)), dtype=input1.dtype, device=torch.device('cuda')).transpose(1,0)
-         output = torch.bmm(input1, input2, out=output)
+         output = torch.empty((input1.size(1), input1.size(0), input2.size(2)), dtype=input1.dtype, device=torch.device('xla')).transpose(1,0)
+         # output = torch.bmm(input1, input2, out=output)
+         output = torch.bmm(input1, input2)
          return output.detach()
 
      @staticmethod
      def backward(ctx, grad_output) :
          input1,input2 = ctx.saved_tensors
-         grad_input2 = torch.empty((input2.size(1), input2.size(0), input2.size(2)), dtype=input2.dtype, device=torch.device('cuda')).transpose(1,0)
-         grad_input1 = torch.empty((input1.size(0), input1.size(1), input1.size(2)), dtype=input2.dtype, device=torch.device('cuda'))
+         grad_input2 = torch.empty((input2.size(1), input2.size(0), input2.size(2)), dtype=input2.dtype, device=torch.device('xla')).transpose(1,0)
+         grad_input1 = torch.empty((input1.size(0), input1.size(1), input1.size(2)), dtype=input2.dtype, device=torch.device('xla'))
          grad_input1 = torch.bmm(grad_output, input2.transpose(1,2))
-         grad_input2 = torch.bmm(input1.transpose(1,2), grad_output, out=grad_input2)
+         # grad_input2 = torch.bmm(input1.transpose(1,2), grad_output, out=grad_input2)
+         grad_input2 = torch.bmm(input1.transpose(1,2), grad_output)
          return grad_input1,grad_input2
 
 strided_bmm2 = StridedBmm2Func.apply
@@ -642,23 +651,20 @@ class BertSelfOutput(nn.Module):
         return output4
 
 if __name__ == "__main__" :
-    inputs = torch.randint(0, 30522, (64, 128), device="cuda", dtype=torch.int64, requires_grad=False)
-    mask = torch.randint(0, 2, (64, 128), device="cuda", dtype=torch.int64, requires_grad=False)
-    seq = torch.randint(0, 2, (64, 128), device="cuda", dtype=torch.int64, requires_grad=False)
-    grads1 = torch.randn(64, 128, 30522, device="cuda", dtype=torch.float32, requires_grad=False)
-    grads2 = torch.randn(64, 2, device="cuda", dtype=torch.float32, requires_grad=False)
+    inputs = torch.randint(0, 30522, (64, 128), device="xla", dtype=torch.int64, requires_grad=False)
+    mask = torch.randint(0, 2, (64, 128), device="xla", dtype=torch.int64, requires_grad=False)
+    seq = torch.randint(0, 2, (64, 128), device="xla", dtype=torch.int64, requires_grad=False)
+    grads1 = torch.randn(64, 128, 30522, device="xla", dtype=torch.float32, requires_grad=False)
+    grads2 = torch.randn(64, 2, device="xla", dtype=torch.float32, requires_grad=False)
    
+    ltm.mark_step()
     model = BertForPreTraining(BertConfig())
     model.train()
-    model.cuda()
+    model = model.to(device='xla')
    
-    model = torch.jit.script(model)
-   
-    with torch.autograd.profiler.emit_nvtx(enabled=True): ### Profiling
-        for idx in range(5) :
-            if idx == 3 :
-                print(model.graph_for(inputs, seq, mask))
-                #for state in list(model.get_debug_state().execution_plans.values())[0].code.grad_executor_states() :
-                #    print(list(state.execution_plans.values())[0].graph)
-            out1,out2 = model(input_ids=inputs, token_type_ids=seq, attention_mask=mask)
-            torch.autograd.backward((out1, out2),(grads1, grads2))
+    for idx in range(1) :
+        out1,out2 = model(input_ids=inputs, token_type_ids=seq, attention_mask=mask)
+        torch.autograd.backward((out1, out2),(grads1, grads2))
+        ltm.mark_step()
+
+    print(metrics.metrics_report())
